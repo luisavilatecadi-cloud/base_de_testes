@@ -44,7 +44,7 @@ st.markdown(f"""
     div[data-testid="stMetric"] {{
         background-color: {CINZA_FUNDO} !important;
         border: 1px solid #E2E8F0 !important;
-        padding: 15px !important;
+        padding: 10px !important;
         border-radius: 12px !important;
         transition: all 0.3s ease !important;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05) !important;
@@ -56,13 +56,35 @@ st.markdown(f"""
     }}
     div[data-testid="stMetric"] label p {{
         color: {AZUL_ESCURO} !important;
-        font-size: 16px !important;
+        font-size: 13px !important;
         font-weight: 600 !important;
     }}
     div[data-testid="stMetric"] div[data-testid="stMetricValue"] {{
         color: {AZUL_TECADI} !important;
-        font-size: 28px !important;
+        font-size: 22px !important;
         font-weight: 800 !important;
+    }}
+    
+    /* Redução para caber tudo na tela */
+    div[data-testid="stMetric"] div[data-testid="stMetricDelta"] {{
+        font-size: 11px !important;
+    }}
+    .stMarkdown h4 {{
+        margin-bottom: 5px !important;
+        font-size: 18px !important;
+    }}
+    .stMarkdown h5 {{
+        margin-bottom: 3px !important;
+        margin-top: 8px !important;
+        font-size: 15px !important;
+    }}
+    div[data-testid="stVerticalStack"] {{
+        gap: 3px !important;
+    }}
+    /* Reduzir espaçamento entre seções */
+    .stMarkdown {{
+        margin-bottom: 0px !important;
+        padding-bottom: 0px !important;
     }}
    
     /* Estilo PADRÃO para os botões de ABA */
@@ -107,8 +129,36 @@ def load_all_data():
         df_real = pd.read_excel(io.BytesIO(requests.get(converter_link(urls["realizado"])).content))
         df_real['Data'] = pd.to_datetime(df_real['Finalizada em'].astype(str).str.split('-').str[0], dayfirst=True, errors='coerce').dt.date
        
-        df_int = pd.read_excel(io.BytesIO(requests.get(converter_link(urls["integrados"])).content), skiprows=2)
-        df_int['Data'] = pd.to_datetime(df_int['Data Entrega'], dayfirst=True, errors='coerce').dt.date
+# --- BLOCO INTEGRADOS (VERSÃO FINAL BLINDADA) ---
+        response_int = requests.get(converter_link(urls["integrados"]))
+        # skiprows=1 pula o título mesclado para ler os cabeçalhos corretamente
+        df_int = pd.read_excel(io.BytesIO(response_int.content), skiprows=1)
+        
+        # 1. Padronização total de nomes
+        df_int.columns = [str(c).strip().upper() for c in df_int.columns]
+        
+        # 2. Mapeamento Inteligente (Procura palavras-chave)
+        col_data = next((c for c in df_int.columns if 'DATA' in c), df_int.columns[0])
+        col_lin  = next((c for c in df_int.columns if 'LINHA' in c), None)
+        col_pec  = next((c for c in df_int.columns if 'PEÇA' in c or 'PECA' in c), None)
+        col_ped  = next((c for c in df_int.columns if 'PEDIDO' in c), None)
+
+        # 3. Renomeia e GARANTE que as colunas existam (evita KeyError)
+        df_int = df_int.rename(columns={col_data: 'Data'})
+
+        if col_lin: df_int = df_int.rename(columns={col_lin: 'Linhas'})
+        else: df_int['Linhas'] = 0
+
+        if col_pec: df_int = df_int.rename(columns={col_pec: 'Peças'})
+        else: df_int['Peças'] = 0
+
+        if col_ped: df_int = df_int.rename(columns={col_ped: 'Pedidos'})
+        else: df_int['Pedidos'] = 0
+        
+        # 4. Tratamento final da Data
+        df_int['Data'] = pd.to_datetime(df_int['Data'], dayfirst=True, errors='coerce').dt.date
+        df_int = df_int.dropna(subset=['Data'])
+        # --------------------------------------------
        
         df_pend = pd.read_excel(io.BytesIO(requests.get(converter_link(urls["pendentes"])).content))
        
@@ -149,6 +199,25 @@ def load_all_data():
 
 df_f, df_i, df_p_proc, df_c, df_p_pul, erro = load_all_data()
 
+# --- PREPARAÇÃO DOS PENDENTES POR TIPO ---
+if df_p_proc is not None:
+    df_pendentes = df_p_proc.copy()
+    df_pendentes.columns = df_pendentes.columns.str.strip()
+    
+    # Identificar coluna de tipo (TIPO, Tipo, etc)
+    col_tipo = next((c for c in ['TIPO', 'Tipo', 'Type', 'tipo'] if c in df_pendentes.columns), None)
+    
+    if col_tipo:
+        df_pendentes[col_tipo] = df_pendentes[col_tipo].astype(str).str.upper().str.strip()
+        df_picking = df_pendentes[df_pendentes[col_tipo].str.contains('PICKING', na=False)]
+        df_packing = df_pendentes[df_pendentes[col_tipo].str.contains('PACKING', na=False)]
+    else:
+        df_picking = None
+        df_packing = None
+else:
+    df_picking = None
+    df_packing = None
+
 def proxima_aba():
     st.session_state.aba_atual = (st.session_state.aba_atual + 1) % 6
 
@@ -160,78 +229,15 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
     autoplay = st.checkbox("🚩 Ativar Autoplay (10s)", value=False)
-    st.write(f"**Aba Ativa:** {st.session_state.aba_atual + 1} de 6")
+    st.write(f"**Aba Ativa:** {st.session_state.aba_atual + 1} de 7")
     if erro: st.error(f"Erro ao carregar: {erro}")
 
 # --- HEADER ---
 st.markdown('<div class="dash-header"><div class="dash-title">Monitor de Fluxo Operacional - ZEN</div></div>', unsafe_allow_html=True)
 
-# --- CARDS DE MÉTRICAS ---
-if df_f is not None and df_i is not None:
-    # 1. DEFINIÇÃO DAS DATAS
-    hoje = datetime.now().date()
-    ontem = hoje - pd.Timedelta(days=1)
-   
-    # Formatação para os títulos (Ex: 27/ABR)
-    meses_pt = {1: 'JAN', 2: 'FEV', 3: 'MAR', 4: 'ABR', 5: 'MAI', 6: 'JUN',
-                7: 'JUL', 8: 'AGO', 9: 'SET', 10: 'OUT', 11: 'NOV', 12: 'DEZ'}
-   
-    label_hoje = f"{hoje.day:02d}/{meses_pt[hoje.month]}"
-    label_ontem = f"{ontem.day:02d}/{meses_pt[ontem.month]}"
-
-    # 2. FILTRAGEM
-    df_hoje = df_f[df_f['Data'] == hoje]
-    df_ontem = df_f[df_f['Data'] == ontem]
-
-    # 3. CÁLCULO
-    l_h, l_o = df_hoje['Linhas montadas'].sum(), df_ontem['Linhas montadas'].sum()
-    p_h, p_o = df_hoje['Peças montadas'].sum(), df_ontem['Peças montadas'].sum()
-    ped_h, ped_o = df_hoje['Código'].nunique(), df_ontem['Código'].nunique()
-
- # 1. CÁLCULO DAS DIFERENÇAS (Isso define se hoje foi melhor ou pior que ontem)
-    diff_linhas = l_h - l_o
-    diff_pecas = p_h - p_o
-    diff_pedidos = ped_h - ped_o # Agora a variável existe e não fica em amarelo
-
-    # 2. DEFINIÇÃO DOS SINAIS PARA FORÇAR A COR (Verde se hoje >= ontem, Vermelho se hoje < ontem)
-    s_lin = "+" if diff_linhas >= 0 else "-"
-    s_pec = "+" if diff_pecas >= 0 else "-"
-    s_ped = "+" if diff_pedidos >= 0 else "-"
-
-    # 3. EXIBIÇÃO DOS CARDS
-    c1, c2, c3 = st.columns(3)
-   
-    c1.metric(
-        label=f"Linhas Realizadas ({label_hoje})",
-        value=formatar_br(l_h),
-        # O sinal na frente força a cor baseada na performance de HOJE
-        delta=f"{s_lin} {formatar_br(l_o)} em {label_ontem}"
-    )
-   
-    c2.metric(
-        label=f"Peças Realizadas ({label_hoje})",
-        value=formatar_br(p_h),
-        delta=f"{s_pec} {formatar_br(p_o)} em {label_ontem}"
-    )
-   
-    c3.metric(
-        label=f"Pedidos Realizados ({label_hoje})",
-        value=formatar_br(ped_h),
-        delta=f"{s_ped} {formatar_br(ped_o)} em {label_ontem}"
-    )
-
-    # 6. EXIBIÇÃO DOS PENDENTES (MANTIDO CONFORME ORIGINAL)
-    st.markdown("")
-    p1, p2, p3 = st.columns(3)
-    p1.metric("Linhas Pendentes", formatar_br(df_i['Linhas Enviadas'].sum()))
-    p2.metric("Peças Pendentes", formatar_br(df_i['QTD Enviada'].sum()))
-    p3.metric("Pedidos Pendentes", formatar_br(df_i['Nº Pedido'].nunique()))
-
-st.markdown("---")
-
 # --- NAVEGAÇÃO POR ABAS ---
-titulos = ["📈 Linhas", "📦 Peças", "📋 Pedidos", "🗂️ Backlog", "✂️ Cortes", "🦘 Pulos"]
-cols_abas = st.columns(6)
+titulos = ["📊 Cards", "📈 Linhas", "📦 Peças", "📋 Pedidos", "🗂️ Backlog", "✂️ Cortes", "🦘 Pulos"]
+cols_abas = st.columns(7)
 
 for i, titulo in enumerate(titulos):
     with cols_abas[i]:
@@ -240,73 +246,160 @@ for i, titulo in enumerate(titulos):
             st.rerun()
 
 def criar_figura(df_real, df_int, col_real, col_int, titulo, op="sum"):
-    # 1. Agrupamento (Soma ou Contagem)
+    # 1. Realizado
     if op == "sum":
         r = df_real.groupby('Data')[col_real].sum()
-        i = df_int.groupby('Data')[col_int].sum()
     else:
         r = df_real.groupby('Data')[col_real].nunique()
-        i = df_int.groupby('Data')[col_int].nunique()
-   
-    # 2. Criar DataFrame e tratar NaNs como 0
+    
+    # 2. INTEGRADO (Garantindo que os valores sejam números)
+    if col_int in df_int.columns:
+        df_int[col_int] = pd.to_numeric(df_int[col_int], errors='coerce').fillna(0)
+        i = df_int.groupby('Data')[col_int].sum()
+    else:
+        i = pd.Series(dtype=float)
+    
+    # Unir e tratar NaNs
     df_plot = pd.DataFrame({'Realizado': r, 'Integrado': i}).fillna(0)
-   
-    # 3. Ordenar e pegar os últimos 12 dias
     df_plot = df_plot.sort_index().tail(12).reset_index()
-   
-    # 4. FORMATAÇÃO DA DATA (Padrão 10/ABR)
-    meses_en_pt = {
-        'JAN': 'JAN', 'FEB': 'FEV', 'MAR': 'MAR', 'APR': 'ABR', 'MAY': 'MAI', 'JUN': 'JUN',
-        'JUL': 'JUL', 'AUG': 'AGO', 'SEP': 'SET', 'OCT': 'OUT', 'NOV': 'NOV', 'DEC': 'DEZ'
-    }
-   
+    
+    # Formatação de Data
+    meses_en_pt = {'JAN': 'JAN', 'FEB': 'FEV', 'MAR': 'MAR', 'APR': 'ABR', 'MAY': 'MAI', 
+                   'JUN': 'JUN', 'JUL': 'JUL', 'AUG': 'AGO', 'SEP': 'SET', 'OCT': 'OUT', 
+                   'NOV': 'NOV', 'DEC': 'DEZ'}
+    
     df_plot['Data_Label'] = pd.to_datetime(df_plot['Data']).dt.strftime('%d/%b').str.upper()
     for en, pt in meses_en_pt.items():
         df_plot['Data_Label'] = df_plot['Data_Label'].str.replace(en, pt)
-   
-    # 5. GERAÇÃO DO GRÁFICO
-    fig = px.bar(
-        df_plot,
-        x='Data_Label',
-        y=['Realizado', 'Integrado'],
-        barmode='group',
-        # --- ALTERAÇÃO 1: Removi o title daqui para configurar no update_layout ---
-        color_discrete_map={'Realizado': AZUL_TECADI, 'Integrado': AZUL_CLARO_TECADI},
-        text_auto='.0f'
-    )
-   
-    fig.update_traces(
-        textposition='outside',
-        textfont=dict(color=AZUL_ESCURO, size=12, weight="bold")
-    )
-   
-    # --- ALTERAÇÃO 2: Aplicação do layout de título robusto ---
+    
+    fig = px.bar(df_plot, x='Data_Label', y=['Realizado', 'Integrado'], barmode='group',
+                 color_discrete_map={'Realizado': AZUL_TECADI, 'Integrado': AZUL_CLARO_TECADI},
+                 text_auto='.0f')
+    
     fig.update_layout(
-        title=dict(
-            text=titulo,
-            font=dict(color=AZUL_TECADI, size=22, weight="bold")
-        ),
-        plot_bgcolor='white',
-        xaxis_title=None,
-        yaxis_title=None,
-        legend_title=None,
-        margin=dict(l=10, r=10, t=80, b=20), # t=80 para dar espaço ao título maior
-        height=450,
-        yaxis=dict(showgrid=True, gridcolor='#F0F0F0')
+        title=dict(text=titulo, font=dict(color=AZUL_TECADI, size=22, weight="bold")),
+        plot_bgcolor='white', xaxis_title=None, yaxis_title=None, height=450
     )
-   
     return fig
 
 aba = st.session_state.aba_atual
 
 if df_f is not None:
-    if aba == 0: # LINHAS
-        st.plotly_chart(criar_figura(df_f, df_i, 'Linhas montadas', 'Linhas Enviadas', "Linhas: Realizado vs Integrado"), use_container_width=True)
-    elif aba == 1: # PEÇAS
-        st.plotly_chart(criar_figura(df_f, df_i, 'Peças montadas', 'QTD Enviada', "Peças: Realizado vs Integrado"), use_container_width=True)
-    elif aba == 2: # PEDIDOS
-        st.plotly_chart(criar_figura(df_f, df_i, 'Código', 'Nº Pedido', "Pedidos: Realizado vs Integrado", op="count"), use_container_width=True)
-    elif aba == 3: # --- ABA BACKLOG (PENDENTES D+2) ---
+    if aba == 0: # --- ABA CARDS ---
+        st.markdown("<h4 style='color: #1D569B; margin-bottom: 10px;'>📊 Visão Geral - Métricas do Dia</h4>", unsafe_allow_html=True)
+        
+        # 1. DEFINIÇÃO DAS DATAS
+        hoje = datetime.now().date()
+        ontem = hoje - pd.Timedelta(days=1)
+        
+        # Formatação para os títulos (Ex: 27/ABR)
+        meses_pt = {1: 'JAN', 2: 'FEV', 3: 'MAR', 4: 'ABR', 5: 'MAI', 6: 'JUN',
+                    7: 'JUL', 8: 'AGO', 9: 'SET', 10: 'OUT', 11: 'NOV', 12: 'DEZ'}
+        
+        label_hoje = f"{hoje.day:02d}/{meses_pt[hoje.month]}"
+        label_ontem = f"{ontem.day:02d}/{meses_pt[ontem.month]}"
+
+        # 2. FILTRAGEM
+        df_hoje = df_f[df_f['Data'] == hoje]
+        df_ontem = df_f[df_f['Data'] == ontem]
+
+        # 3. CÁLCULO
+        l_h, l_o = df_hoje['Linhas montadas'].sum(), df_ontem['Linhas montadas'].sum()
+        p_h, p_o = df_hoje['Peças montadas'].sum(), df_ontem['Peças montadas'].sum()
+        ped_h, ped_o = df_hoje['Código'].nunique(), df_ontem['Código'].nunique()
+
+        # 4. CÁLCULO DAS DIFERENÇAS
+        diff_linhas = l_h - l_o
+        diff_pecas = p_h - p_o
+        diff_pedidos = ped_h - ped_o
+
+        # 5. DEFINIÇÃO DOS SINAIS PARA FORÇAR A COR
+        s_lin = "+" if diff_linhas >= 0 else "-"
+        s_pec = "+" if diff_pecas >= 0 else "-"
+        s_ped = "+" if diff_pedidos >= 0 else "-"
+        
+        # 6. EXIBIÇÃO DOS CARDS
+        c1, c2, c3 = st.columns([1,1,1])
+        
+        c1.metric(
+            label=f"Linhas Realizadas ({label_hoje})",
+            value=formatar_br(l_h),
+            delta=f"{s_lin} {formatar_br(l_o)} em {label_ontem}"
+        )
+        
+        c2.metric(
+            label=f"Peças Realizadas ({label_hoje})",
+            value=formatar_br(p_h),
+            delta=f"{s_pec} {formatar_br(p_o)} em {label_ontem}"
+        )
+        
+        c3.metric(
+            label=f"Pedidos Realizados ({label_hoje})",
+            value=formatar_br(ped_h),
+            delta=f"{s_ped} {formatar_br(ped_o)} em {label_ontem}"
+        )
+
+        # 7. EXIBIÇÃO DOS PENDENTES POR TIPO
+        colunas_df = df_p_proc.columns.tolist()
+        
+        # Buscar coluna de quantidade (QTD, Qtd, etc)
+        col_qtd_pend = next((c for c in colunas_df if 'PEÇAS SOLICITADAS' in c.upper() or 'PECAS SOLICITADAS' in c.upper()), None)
+        if not col_qtd_pend:
+            col_qtd_pend = next((c for c in colunas_df if 'QTD' in c.upper()), colunas_df[2] if len(colunas_df) > 2 else None)
+        
+        # Buscar coluna de linhas
+        col_linhas_pend = next((c for c in colunas_df if 'LINHA' in c.upper()), None)
+        
+        # Buscar coluna de pedido
+        col_pedido_pend = next((c for c in colunas_df if 'PEDIDO' in c.upper() or 'Nº' in c), colunas_df[1] if len(colunas_df) > 1 else None)
+        
+        # Debug: mostrar colunas disponíveis
+        # st.write("Colunas disponíveis:", colunas_df)
+        
+        # --- PICKING ---
+        st.markdown("<h5 style='color: #1D569B; margin-top: 12px;'>🎯 PICKING</h5>", unsafe_allow_html=True)
+        if df_picking is not None and not df_picking.empty:
+            p1, p2, p3 = st.columns(3)
+            with p1:
+                val_lin = df_picking[col_linhas_pend].sum() if col_linhas_pend and col_linhas_pend in df_picking.columns else 0
+                st.metric("Linhas Pendentes", formatar_br(val_lin))
+            with p2:
+                val_peca = df_picking[col_qtd_pend].sum() if col_qtd_pend and col_qtd_pend in df_picking.columns else 0
+                st.metric("Peças Pendentes", formatar_br(val_peca))
+            with p3:
+                val_ped = df_picking[col_pedido_pend].nunique() if col_pedido_pend and col_pedido_pend in df_picking.columns else len(df_picking)
+                st.metric("Tarefas Pendentes", formatar_br(val_ped))
+        else:
+            st.info("Nenhum pendiente de PICKING")
+        
+        # --- PACKING ---
+        st.markdown("<h5 style='color: #1D569B; margin-top: 12px;'>📦 PACKING</h5>", unsafe_allow_html=True)
+        if df_packing is not None and not df_packing.empty:
+            p1, p2, p3 = st.columns(3)
+            with p1:
+                val_lin = df_packing[col_linhas_pend].sum() if col_linhas_pend and col_linhas_pend in df_packing.columns else 0
+                st.metric("Linhas Pendentes", formatar_br(val_lin))
+            with p2:
+                val_peca = df_packing[col_qtd_pend].sum() if col_qtd_pend and col_qtd_pend in df_packing.columns else 0
+                st.metric("Peças Pendentes", formatar_br(val_peca))
+            with p3:
+                val_ped = df_packing[col_pedido_pend].nunique() if col_pedido_pend and col_pedido_pend in df_packing.columns else len(df_packing)
+                st.metric("Pedidos Pendentes", formatar_br(val_ped))
+        else:
+            st.info("Nenhum pendiente de PACKING")
+        
+    elif aba == 1: # LINHAS
+        # col_int mudou para 'Linhas' (conforme sua imagem)
+        st.plotly_chart(criar_figura(df_f, df_i, 'Linhas montadas', 'Linhas', "Linhas: Realizado vs Integrado"), use_container_width=True)
+    
+    elif aba == 2: # PEÇAS
+        # col_int mudou para 'Peças'
+        st.plotly_chart(criar_figura(df_f, df_i, 'Peças montadas', 'Peças', "Peças: Realizado vs Integrado"), use_container_width=True)
+    
+    elif aba == 3: # PEDIDOS
+        # col_int mudou para 'Pedidos'
+        st.plotly_chart(criar_figura(df_f, df_i, 'Código', 'Pedidos', "Pedidos: Realizado vs Integrado", op="count"), use_container_width=True)
+    elif aba == 4: # --- ABA BACKLOG (PENDENTES D+2) ---
         st.subheader("📋 Backlog de Pedidos (Atrasados D+2)")
 
         # 1. IDENTIFICAÇÃO DINÂMICA E LIMPEZA
@@ -389,7 +482,7 @@ if df_f is not None:
             )
         else:
             st.success("✅ Tudo em dia! Nenhum pedido fora do prazo D+2.")
-    elif aba == 4: # --- ABA CORTES ---
+    elif aba == 5: # --- ABA CORTES ---
        
        
         df_c_clean = df_c.copy()
@@ -439,7 +532,7 @@ if df_f is not None:
             )
             st.plotly_chart(fig_evol_c, use_container_width=True)
 
-    elif aba == 5: # --- ABA PULOS (RACIONAL FIEL AO PULOS_ZEN.PY) ---
+    elif aba == 6: # --- ABA PULOS (RACIONAL FIEL AO PULOS_ZEN.PY) ---
        
 
         # 1. CÓPIA E PREPARAÇÃO (Racional do Pulos_Zen.py)
