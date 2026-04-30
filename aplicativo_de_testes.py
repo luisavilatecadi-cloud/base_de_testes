@@ -6,6 +6,7 @@ import requests
 import time
 import plotly.graph_objects as go
 from datetime import datetime
+import pytz
 
 # 1. Configuração da Página
 st.set_page_config(page_title="TECADI - TV Operacional", page_icon="📺", layout="wide")
@@ -38,7 +39,7 @@ st.markdown(f"""
         background: linear-gradient(180deg, {AZUL_ESCURO} 0%, {AZUL_TECADI} 100%);
         min-width: 260px !important;
     }}
-    [data-testid="stSidebar"] p, label, .stMarkdown p, .stCheckbox span, h3 {{ color: white !important; }}
+    [data-testid="stSidebar"] p, label, .stMarkdown p, .stCheckbox span {{ color: white !important; }}
 
     /* --- ESTILIZAÇÃO DOS CARDS (VERSÃO ORIGINAL RESTAURADA) --- */
     div[data-testid="stMetric"] {{
@@ -245,7 +246,7 @@ for i, titulo in enumerate(titulos):
             st.session_state.aba_atual = i
             st.rerun()
 
-def criar_figura(df_real, df_int, col_real, col_int, titulo, op="sum"):
+def criar_figura(df_real, df_int, col_real, col_int, titulo, op="sum", meta=None):
     # 1. Realizado
     if op == "sum":
         r = df_real.groupby('Data')[col_real].sum()
@@ -276,6 +277,15 @@ def criar_figura(df_real, df_int, col_real, col_int, titulo, op="sum"):
                  color_discrete_map={'Realizado': AZUL_TECADI, 'Integrado': AZUL_CLARO_TECADI},
                  text_auto='.0f')
     
+    if meta:
+        fig.add_hline(y=meta, 
+                      line_dash="dot", 
+                      line_color="red", 
+                      line_width=2,
+                      annotation_text=f"META: {formatar_br(meta)}", 
+                      annotation_position="top right",
+                      annotation_font_color="red")
+    
     fig.update_layout(
         title=dict(text=titulo, font=dict(color=AZUL_TECADI, size=22, weight="bold")),
         plot_bgcolor='white', xaxis_title=None, yaxis_title=None, height=450
@@ -289,7 +299,12 @@ if df_f is not None:
         st.markdown("<h4 style='color: #1D569B; margin-bottom: 10px;'>📊 Visão Geral - Métricas do Dia</h4>", unsafe_allow_html=True)
         
         # 1. DEFINIÇÃO DAS DATAS
-        hoje = datetime.now().date()
+        import pytz # Adicione o import no topo ou aqui mesmo
+
+        # 1. DEFINIÇÃO DAS DATAS (Ajustado para fuso de Brasília)
+        fuso_br = pytz.timezone('America/Sao_Paulo')
+        agora_br = datetime.now(fuso_br)
+        hoje = agora_br.date()
         ontem = hoje - pd.Timedelta(days=1)
         
         # Formatação para os títulos (Ex: 27/ABR)
@@ -390,7 +405,8 @@ if df_f is not None:
         
     elif aba == 1: # LINHAS
         # col_int mudou para 'Linhas' (conforme sua imagem)
-        st.plotly_chart(criar_figura(df_f, df_i, 'Linhas montadas', 'Linhas', "Linhas: Realizado vs Integrado"), use_container_width=True)
+        st.plotly_chart(criar_figura(df_f, df_i, 'Linhas montadas', 'Linhas', "Linhas: Realizado vs Integrado" , meta=3000), use_container_width=True)
+        
     
     elif aba == 2: # PEÇAS
         # col_int mudou para 'Peças'
@@ -400,8 +416,8 @@ if df_f is not None:
         # col_int mudou para 'Pedidos'
         st.plotly_chart(criar_figura(df_f, df_i, 'Código', 'Pedidos', "Pedidos: Realizado vs Integrado", op="count"), use_container_width=True)
     elif aba == 4: # --- ABA BACKLOG (PENDENTES D+2) ---
-        st.subheader("📋 Backlog de Pedidos (Atrasados D+2)")
-
+        st.markdown("<h3 style='color: #1D569B; font-weight: 800;'>📋 Backlog de Pedidos (Atrasados D+2)</h3>", unsafe_allow_html=True)
+        
         # 1. IDENTIFICAÇÃO DINÂMICA E LIMPEZA
         df_backlog = df_p_proc.copy()
         df_backlog.columns = df_backlog.columns.str.strip()
@@ -418,7 +434,9 @@ if df_f is not None:
         )
        
         # Pegamos o momento atual como Timestamp para comparação direta
-        agora = pd.Timestamp.now().normalize()
+        fuso_br = pytz.timezone('America/Sao_Paulo')
+        agora = pd.Timestamp.now(tz=fuso_br).normalize().tz_localize(None) 
+        # O tz_localize(None) remove o fuso após converter, para evitar erro de comparação com datas simples
 
         def calcular_limite_v2(dt):
             if pd.isna(dt):
